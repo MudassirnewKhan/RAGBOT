@@ -1,0 +1,53 @@
+MACHINE LEARNING & GEN AI FUNDAMENTALS FOR TAX TECHNOLOGY (EY PREP)
+
+1. CORE MACHINE LEARNING TYPES
+--------------------------------------------------
+A. Supervised Learning: Learning from labeled historical data.
+   - Classification: Categorizing transactions (e.g., 'Compliant' vs. 'Non-Compliant').
+   - Regression: Predicting numerical values (e.g., Estimating future tax liability).
+   - EY Use Case: Predicting audit risks based on past filing discrepancies.
+
+B. Unsupervised Learning: Finding patterns in unlabeled data.
+   - Clustering: Grouping similar taxpayers or transaction types.
+   - Anomaly Detection: Identifying 'outliers' that may indicate fraud or accounting errors.
+   - EY Use Case: Spotting unusual spending patterns in corporate expense reports.
+
+2. GENERATIVE AI & LLM CONCEPTS
+--------------------------------------------------
+A. Large Language Models (LLMs):
+   - Based on the Transformer architecture.
+   - Uses the 'Attention Mechanism' to understand context within long legal documents.
+   - EY Use Case: Summarizing 1,000+ page tax law updates into 1-page briefs.
+
+B. RAG (Retrieval-Augmented Generation):
+   - The standard for building "Factual" AI.
+   - Process: Documents -> Chunking -> Vector Embeddings -> Vector DB -> LLM.
+   - Key Benefit: Prevents "hallucinations" by forcing the AI to answer based on specific Tax Law PDFs.
+
+3. INTELLIGENT AGENTS (The "Thinker & Doer")
+--------------------------------------------------
+A. Definition: A system that uses an LLM to make decisions and use tools.
+B. Core Components:
+   - Planning: Breaking down a complex tax task into smaller steps.
+   - Memory: Remembering past user interactions (Short-term) and database records (Long-term).
+   - Tool Use: The agent calling a SQL query or a calculator to finish a task.
+C. Frameworks: LangChain, CrewAI, AutoGPT.
+
+4. NATURAL LANGUAGE PROCESSING (NLP)
+--------------------------------------------------
+A. NER (Named Entity Recognition): Extracting specific entities like GSTIN numbers, company names, and dates.
+B. Sentiment Analysis: Evaluating the urgency or tone of government notices.
+C. Semantic Search: Searching for "meaning" rather than just "keywords."
+
+5. PERFORMANCE METRICS (How to evaluate)
+--------------------------------------------------
+- Precision: Minimizing "False Alarms" (important for audit efficiency).
+- Recall: Ensuring no errors are missed (important for compliance).
+- F1-Score: The harmonic mean of Precision and Recall.
+- Perplexity: Measuring how well an LLM predicts the next word.
+
+6. DEPLOYMENT & PRODUCTION (The "Engineer" Side)
+--------------------------------------------------
+- Docker: Containerizing the ML model to ensure it runs anywhere.
+- API: Serving the model via FastAPI or Flask.
+- Vector Databases: ChromaDB, Pinecone, or Milvus for storing AI embeddings.
