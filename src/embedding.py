@@ -1,38 +1,46 @@
-from typing import List, Any
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sentence_transformers import SentenceTransformer
+"""
+Embedding service.
+Loads the SentenceTransformer model once and provides vector encoding utilities.
+"""
+from typing import List
 import numpy as np
-from src.data_loader import load_all_documents
-class EmbeddingPipeline:
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", chunk_size: int = 1000, chunk_overlap: int = 200):
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.model = SentenceTransformer(model_name)
-        print(f"[INFO] Loaded embedding model: {model_name}")
+from sentence_transformers import SentenceTransformer
+from src.config import EMBEDDING_MODEL
 
-    def chunk_documents(self, documents: List[Any]) -> List[Any]:
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""]
+
+class EmbeddingService:
+    """Singleton-style embedding service for dense vector representation."""
+
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or EMBEDDING_MODEL
+        print(f"[INFO] Initializing Embedding Model: {self.model_name}...")
+        try:
+            # Try offline cached loading first to prevent network retry timeouts
+            self.model = SentenceTransformer(self.model_name, local_files_only=True)
+        except Exception:
+            self.model = SentenceTransformer(self.model_name)
+        try:
+            self.dimension = self.model.get_embedding_dimension()
+        except AttributeError:
+            self.dimension = self.model.get_sentence_embedding_dimension()
+        print(f"[INFO] Embedding Model active. Embedding dimension: {self.dimension}")
+
+    def encode(self, texts: List[str], show_progress: bool = False) -> np.ndarray:
+        """
+        Encode a list of texts into dense vectors (float32).
+        """
+        if not texts:
+            return np.empty((0, self.dimension), dtype="float32")
+
+        embeddings = self.model.encode(
+            texts,
+            show_progress_bar=show_progress,
+            convert_to_numpy=True,
         )
-        chunks = splitter.split_documents(documents)
-        print(f"[INFO] Split {len(documents)} documents into {len(chunks)} chunks.")
-        return chunks
+        return embeddings.astype("float32")
 
-    def embed_chunks(self, chunks: List[Any]) -> np.ndarray:
-        texts = [chunk.page_content for chunk in chunks]
-        print(f"[INFO] Generating embeddings for {len(texts)} chunks...")
-        embeddings = self.model.encode(texts, show_progress_bar=True)
-        print(f"[INFO] Embeddings shape: {embeddings.shape}")
-        return embeddings
-
-# Example usage
-if __name__ == "__main__":
-    
-    docs = load_all_documents("data")
-    emb_pipe = EmbeddingPipeline()
-    chunks = emb_pipe.chunk_documents(docs)
-    embeddings = emb_pipe.embed_chunks(chunks)
-    print("[INFO] Example embedding:", embeddings[0] if len(embeddings) > 0 else None)
+    def encode_query(self, query: str) -> np.ndarray:
+        """
+        Encode a single query string into a 1D vector (float32).
+        """
+        return self.encode([query])[0]

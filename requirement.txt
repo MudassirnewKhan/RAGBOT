@@ -1,10 +1,17 @@
+# Core
 langchain
 langchain-core
 langchain-community
-pypdf
-pymupdf 
-sentence-transformers
-faiss-cpu
-chromadb
 langchain-groq
 python-dotenv
+
+# Document Parsing
+pymupdf
+
+# Embeddings & Vector Store
+sentence-transformers
+faiss-cpu
+numpy
+
+# Hybrid Search (BM25 keyword search)
+rank-bm25

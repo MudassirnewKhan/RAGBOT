@@ -1,65 +1,103 @@
-import os
+"""
+RAGBOT — Production Knowledge Base Interface
+Run: python main.py
+"""
 import sys
-from dotenv import load_dotenv
+import os
+from pathlib import Path
 
-# Absolute path configuration to resolve internal 'src' cross-imports
-project_root = os.path.dirname(os.path.abspath(__file__))
-if project_root not in sys.path:
-    sys.path.append(project_root)
+# Ensure project root is available on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load environment configurations from your root .env file
-load_dotenv(os.path.join(project_root, ".env"))
+from src.rag_engine import RAGEngine
 
-try:
-    from src.search import RAGSearch
-except ModuleNotFoundError as e:
-    print(f"\n❌ Import Error: {e}")
-    print("👉 Solution: Ensure you have prefixed internal imports inside your src/ files with 'src.'")
-    print("Example: Inside src/search.py, change 'from vectorstore...' to 'from src.vectorstore...'")
-    sys.exit(1)
 
-def main():
-    print("=" * 60)
-    print("🤖 KNOWLEDGE BASE RAG PIPELINE ACTIVE")
-    print("=" * 60)
-    
-    # Using Llama 3.3 to bypass the decommissioned Gemma2 model endpoint error
+def format_header():
+    print()
+    print("=" * 65)
+    print("🤖  RAGBOT: Production-Grade Knowledge Base Assistant")
+    print("=" * 65)
+    print("  • Architecture : PyMuPDF + Hybrid (FAISS Cosine + Okapi BM25)")
+    print("  • Neural Rank  : Cross-Encoder (ms-marco-MiniLM-L-6-v2)")
+    print("  • LLM Engine   : Groq Llama 3.3 70B (Versatile)")
+    print("=" * 65)
+    print("Commands:")
+    print("  Type your question and press [Enter]")
+    print("  Type 'rebuild' to force document re-indexing")
+    print("  Type 'exit', 'quit', or 'q' to terminate session")
+    print("=" * 65)
+    print()
+
+
+def run_interactive_session():
+    format_header()
+
     try:
-        rag = RAGSearch(
-            persist_dir="faiss_store", 
-            embedding_model="all-MiniLM-L6-v2", 
-            llm_model="llama-3.3-70b-versatile"
-        )
-        print("\n✅ System initialized successfully! Type 'exit' or 'quit' to terminate.\n")
+        engine = RAGEngine()
     except Exception as e:
         print(f"\n❌ Initialization Failure: {e}")
-        print("Please check that GROQ_API_KEY is properly set in your .env file.")
+        print("Please check your .env file and ensure GROQ_API_KEY is properly set.")
         return
 
-    # Continuous interactive QA session loop
+    print("\n✅ System active! Ask anything from your knowledge base.\n")
+
     while True:
         try:
-            print("-" * 60)
-            query = input("❓ Ask a question: ").strip()
-            
+            print("-" * 65)
+            query = input("❓ Question: ").strip()
+
             if not query:
                 continue
-            if query.lower() in ['exit', 'quit', 'q']:
-                print("\n👋 Disconnecting RAG session. Happy learning!")
+
+            if query.lower() in ("exit", "quit", "q"):
+                print("\n👋 Disconnecting RAG session. Happy learning!\n")
                 break
-                
-            print("\n🔍 Traversing vector space and synthesizing response...")
-            summary = rag.search_and_summarize(query, top_k=3)
-            
-            print("\n💡 AI Engine Response:")
-            print(summary)
-            print("-" * 60 + "\n")
-            
+
+            if query.lower() == "rebuild":
+                print("\n🔄 Rebuilding knowledge base from data/ directory...")
+                engine.build_index()
+                print("✅ Rebuild complete!\n")
+                continue
+
+            print("\n🔍 Traversing hybrid vector space & reranking candidates...")
+            result = engine.query(query)
+
+            # Display AI Answer
+            print("\n💡 AI Response:")
+            print(result["answer"])
+
+            # Display Attributed Citations
+            sources = result.get("sources", [])
+            if sources:
+                print(f"\n📚 Citations & Provenance ({len(sources)} sources consulted):")
+                for s in sources:
+                    score_str = f"score: {s['relevance_score']:+.3f}"
+                    method_str = f"[{s.get('retrieval_method', 'hybrid')}]"
+                    print(
+                        f"   • {s['file']} (Page {s['page']}) "
+                        f"{method_str:10} | {score_str}"
+                    )
+
+            # Display Performance Telemetry
+            latency = result.get("processing_time_ms", 0)
+            confidence = result.get("confidence", 0.0)
+            model = result.get("model", "N/A")
+
+            print(
+                f"\n⏱️  Latency: {latency} ms | "
+                f"Confidence: {confidence * 100:.1f}% | "
+                f"Model: {model}"
+            )
+            print("-" * 65 + "\n")
+
         except KeyboardInterrupt:
-            print("\n\n👋 Process execution interrupted gracefully. Exiting...")
+            print("\n\n👋 Session interrupted gracefully. Goodbye!\n")
             break
         except Exception as e:
             print(f"\n⚠️ Runtime Exception encountered: {e}\n")
 
+
 if __name__ == "__main__":
-    main()
+    run_interactive_session()
