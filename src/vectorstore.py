@@ -1,76 +1,100 @@
+"""
+FAISS Vector Store with Cosine Similarity and JSON Metadata.
+Replaces insecure pickle storage with structured JSON serialization.
+"""
 import os
+import json
+from typing import List, Dict, Any
 import faiss
 import numpy as np
-import pickle
-from typing import List, Any
-from sentence_transformers import SentenceTransformer
-from src.embedding import EmbeddingPipeline
+from src.config import FAISS_DIR
 
-class FaissVectorStore:
-    def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = "all-MiniLM-L6-v2", chunk_size: int = 1000, chunk_overlap: int = 200):
-        self.persist_dir = persist_dir
+
+class VectorStore:
+    """FAISS-backed vector store normalized for Cosine Similarity search."""
+
+    def __init__(self, persist_dir: str = None):
+        self.persist_dir = persist_dir or FAISS_DIR
         os.makedirs(self.persist_dir, exist_ok=True)
-        self.index = None
-        self.metadata = []
-        self.embedding_model = embedding_model
-        self.model = SentenceTransformer(embedding_model)
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        print(f"[INFO] Loaded embedding model: {embedding_model}")
+        self.index: faiss.IndexFlatIP = None
+        self.metadata: List[Dict[str, Any]] = []
 
-    def build_from_documents(self, documents: List[Any]):
-        print(f"[INFO] Building vector store from {len(documents)} raw documents...")
-        emb_pipe = EmbeddingPipeline(model_name=self.embedding_model, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
-        chunks = emb_pipe.chunk_documents(documents)
-        embeddings = emb_pipe.embed_chunks(chunks)
-        metadatas = [{"text": chunk.page_content} for chunk in chunks]
-        self.add_embeddings(np.array(embeddings).astype('float32'), metadatas)
-        self.save()
-        print(f"[INFO] Vector store built and saved to {self.persist_dir}")
+    def build(self, embeddings: np.ndarray, metadata_list: List[Dict[str, Any]]):
+        """
+        Build a FAISS IndexFlatIP index with L2-normalized vectors (cosine similarity).
+        """
+        if embeddings.shape[0] == 0:
+            raise ValueError("Cannot build index from empty embeddings array.")
 
-    def add_embeddings(self, embeddings: np.ndarray, metadatas: List[Any] = None):
         dim = embeddings.shape[1]
-        if self.index is None:
-            self.index = faiss.IndexFlatL2(dim)
-        self.index.add(embeddings)
-        if metadatas:
-            self.metadata.extend(metadatas)
-        print(f"[INFO] Added {embeddings.shape[0]} vectors to Faiss index.")
+        self.index = faiss.IndexFlatIP(dim)
+
+        # In-place L2 normalization transforms inner product into cosine similarity
+        norm_embeddings = embeddings.copy()
+        faiss.normalize_L2(norm_embeddings)
+        self.index.add(norm_embeddings)
+        self.metadata = metadata_list
+
+        self.save()
+        print(f"[INFO] Built VectorStore with {self.index.ntotal} vectors (dim={dim}).")
 
     def save(self):
-        faiss_path = os.path.join(self.persist_dir, "faiss.index")
-        meta_path = os.path.join(self.persist_dir, "metadata.pkl")
-        faiss.write_index(self.index, faiss_path)
-        with open(meta_path, "wb") as f:
-            pickle.dump(self.metadata, f)
-        print(f"[INFO] Saved Faiss index and metadata to {self.persist_dir}")
+        """Persist index binary and metadata JSON to disk."""
+        if self.index is None:
+            return
+
+        index_file = os.path.join(self.persist_dir, "faiss.index")
+        metadata_file = os.path.join(self.persist_dir, "metadata.json")
+
+        faiss.write_index(self.index, index_file)
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            json.dump(self.metadata, f, ensure_ascii=False, indent=2, default=str)
+
+        print(f"[INFO] Saved vector store to {self.persist_dir}")
 
     def load(self):
-        faiss_path = os.path.join(self.persist_dir, "faiss.index")
-        meta_path = os.path.join(self.persist_dir, "metadata.pkl")
-        self.index = faiss.read_index(faiss_path)
-        with open(meta_path, "rb") as f:
-            self.metadata = pickle.load(f)
-        print(f"[INFO] Loaded Faiss index and metadata from {self.persist_dir}")
+        """Load index binary and metadata JSON from disk."""
+        index_file = os.path.join(self.persist_dir, "faiss.index")
+        metadata_file = os.path.join(self.persist_dir, "metadata.json")
 
-    def search(self, query_embedding: np.ndarray, top_k: int = 5):
-        D, I = self.index.search(query_embedding, top_k)
-        results = []
-        for idx, dist in zip(I[0], D[0]):
-            meta = self.metadata[idx] if idx < len(self.metadata) else None
-            results.append({"index": idx, "distance": dist, "metadata": meta})
+        if not (os.path.exists(index_file) and os.path.exists(metadata_file)):
+            raise FileNotFoundError(f"Vector store files missing in {self.persist_dir}")
+
+        self.index = faiss.read_index(index_file)
+        with open(metadata_file, "r", encoding="utf-8") as f:
+            self.metadata = json.load(f)
+
+        print(f"[INFO] Loaded vector store: {self.index.ntotal} vectors indexed.")
+
+    def exists(self) -> bool:
+        """Check if both the index and metadata files exist on disk."""
+        index_file = os.path.join(self.persist_dir, "faiss.index")
+        metadata_file = os.path.join(self.persist_dir, "metadata.json")
+        return os.path.isfile(index_file) and os.path.isfile(metadata_file)
+
+    def search(self, query_embedding: np.ndarray, top_k: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search vector store with normalized query embedding for top_k matches.
+        """
+        if self.index is None:
+            return []
+
+        # Prepare 2D float32 normalized vector
+        query_vec = query_embedding.reshape(1, -1).astype("float32").copy()
+        faiss.normalize_L2(query_vec)
+
+        scores, indices = self.index.search(query_vec, top_k)
+        results: List[Dict[str, Any]] = []
+
+        for score, idx in zip(scores[0], indices[0]):
+            if idx < 0 or idx >= len(self.metadata):
+                continue
+
+            entry = self.metadata[idx]
+            results.append({
+                "score": float(score),
+                "text": entry.get("text", ""),
+                "metadata": {k: v for k, v in entry.items() if k != "text"},
+            })
+
         return results
-
-    def query(self, query_text: str, top_k: int = 5):
-        print(f"[INFO] Querying vector store for: '{query_text}'")
-        query_emb = self.model.encode([query_text]).astype('float32')
-        return self.search(query_emb, top_k=top_k)
-
-# Example usage
-if __name__ == "__main__":
-    from data_loader import load_all_documents
-    docs = load_all_documents("data")
-    store = FaissVectorStore("faiss_store")
-    store.build_from_documents(docs)
-    store.load()
-    print(store.query("What is attention mechanism?", top_k=3))
