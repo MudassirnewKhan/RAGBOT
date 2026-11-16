@@ -38,6 +38,22 @@ class VectorStore:
         self.save()
         print(f"[INFO] Built VectorStore with {self.index.ntotal} vectors (dim={dim}).")
 
+    def add(self, embeddings: np.ndarray, metadata_list: List[Dict[str, Any]]):
+        """Append new embeddings and metadata to an existing index."""
+        if embeddings.shape[0] == 0:
+            return
+
+        if self.index is None:
+            self.build(embeddings, metadata_list)
+            return
+
+        norm_embeddings = embeddings.copy()
+        faiss.normalize_L2(norm_embeddings)
+        self.index.add(norm_embeddings)
+        self.metadata.extend(metadata_list)
+        self.save()
+        print(f"[INFO] Appended {embeddings.shape[0]} vectors. Total vectors now: {self.index.ntotal}")
+
     def save(self):
         """Persist index binary and metadata JSON to disk."""
         if self.index is None:
