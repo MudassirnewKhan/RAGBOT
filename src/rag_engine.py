@@ -23,6 +23,7 @@ from src.vectorstore import VectorStore
 from src.bm25_index import BM25Index
 from src.retriever import HybridRetriever
 from src.reranker import Reranker
+from app.utils.rate_limiter import execute_with_retry
 
 
 # --- Strict Production Prompts ---
@@ -118,38 +119,49 @@ class RAGEngine:
         self.bm25_index.build(texts, metadatas)
         print("[INFO] Index construction complete and synchronized.")
 
+    def add_documents(self, documents: List[Any]) -> int:
+        """
+        Incrementally process and add new parsed documents to FAISS and BM25.
+        Returns the number of new chunks added.
+        """
+        if not documents:
+            return 0
+
+        chunks = chunk_documents(documents)
+        if not chunks:
+            return 0
+
+        texts = [c.text for c in chunks]
+        metadatas = [{**c.metadata, "text": c.text} for c in chunks]
+
+        print(f"[INFO] Incrementally encoding {len(texts)} new chunks...")
+        embeddings = self.embedding_service.encode(texts, show_progress=False)
+
+        self.vector_store.add(embeddings, metadatas)
+        self._hydrate_bm25_from_metadata()
+        print(f"[INFO] Incremental addition complete. {len(chunks)} chunks added.")
+        return len(chunks)
+
     def _hydrate_bm25_from_metadata(self):
         """Populate the in-memory BM25 index using cached metadata JSON."""
         texts = [m.get("text", "") for m in self.vector_store.metadata]
         self.bm25_index.build(texts, self.vector_store.metadata)
         print(f"[INFO] BM25 index hydrated with {len(texts)} chunks.")
 
-    def query(self, question: str) -> Dict[str, Any]:
-        """
-        Execute full RAG pipeline:
-        1. Hybrid candidate search (top_k=TOP_K_RETRIEVAL).
-        2. Neural cross-encoder reranking (top_k=TOP_K_FINAL).
-        3. Formulate structured context with metadata tags.
-        4. Generate grounded LLM response with citation enforcement.
-        5. Return rich telemetry: latency, confidence, sources.
-        """
+    def _prepare_query_context(self, question: str, top_k: int = TOP_K_FINAL) -> Dict[str, Any]:
+        """Shared retrieval and reranking pipeline for both standard and streaming queries."""
         start_time = time.time()
-
-        # Stage 1: Hybrid Retrieval
         candidates = self.retriever.search(question, top_k=TOP_K_RETRIEVAL)
         if not candidates:
             return {
-                "answer": "No relevant documents found in the knowledge base matching your query.",
+                "has_context": False,
+                "context": "",
                 "sources": [],
                 "confidence": 0.0,
-                "processing_time_ms": round((time.time() - start_time) * 1000, 1),
-                "model": LLM_MODEL,
+                "start_time": start_time,
             }
 
-        # Stage 2: Cross-Encoder Reranking
-        reranked = self.reranker.rerank(question, candidates, top_k=TOP_K_FINAL)
-
-        # Stage 3: Context Assembly & Source Extraction
+        reranked = self.reranker.rerank(question, candidates, top_k=top_k)
         context_blocks: List[str] = []
         sources: List[Dict[str, Any]] = []
 
@@ -171,32 +183,121 @@ class RAGEngine:
             })
 
         consolidated_context = "\n\n--------------------\n\n".join(context_blocks)
+        avg_score = (
+            sum(s["relevance_score"] for s in sources) / len(sources) if sources else 0.0
+        )
+        confidence = round(1.0 / (1.0 + pow(2.71828, -avg_score)), 3)
 
-        # Stage 4: LLM Generation
+        return {
+            "has_context": True,
+            "context": consolidated_context,
+            "sources": sources,
+            "confidence": confidence,
+            "start_time": start_time,
+        }
+
+    def query(self, question: str, top_k: int = TOP_K_FINAL, min_confidence: float = 0.0) -> Dict[str, Any]:
+        """
+        Execute full RAG pipeline:
+        1. Hybrid candidate search (top_k=TOP_K_RETRIEVAL).
+        2. Neural cross-encoder reranking (top_k=top_k).
+        3. Formulate structured context with metadata tags.
+        4. Generate grounded LLM response with citation enforcement (with retry).
+        5. Return rich telemetry: latency, confidence, sources.
+        """
+        ctx_data = self._prepare_query_context(question, top_k=top_k)
+        start_time = ctx_data["start_time"]
+
+        if not ctx_data["has_context"]:
+            return {
+                "answer": "No relevant documents found in the knowledge base matching your query.",
+                "sources": [],
+                "confidence": 0.0,
+                "processing_time_ms": round((time.time() - start_time) * 1000, 1),
+                "model": LLM_MODEL,
+            }
+
+        if ctx_data["confidence"] < min_confidence:
+            return {
+                "answer": f"Retrieved context confidence ({ctx_data['confidence']:.2f}) falls below required threshold ({min_confidence:.2f}).",
+                "sources": ctx_data["sources"],
+                "confidence": ctx_data["confidence"],
+                "processing_time_ms": round((time.time() - start_time) * 1000, 1),
+                "model": LLM_MODEL,
+            }
+
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(
                 content=USER_PROMPT_TEMPLATE.format(
-                    context=consolidated_context,
+                    context=ctx_data["context"],
                     query=question,
                 )
             ),
         ]
 
-        llm_response = self.llm.invoke(messages)
+        llm_response = execute_with_retry(lambda: self.llm.invoke(messages))
         elapsed_ms = round((time.time() - start_time) * 1000, 1)
-
-        # Stage 5: Confidence Heuristic (calibrated sigmoid over top rerank scores)
-        avg_score = (
-            sum(s["relevance_score"] for s in sources) / len(sources) if sources else 0.0
-        )
-        # Normalization for ms-marco cross-encoder logits (typically -10 to +10)
-        confidence = round(1.0 / (1.0 + pow(2.71828, -avg_score)), 3)
 
         return {
             "answer": llm_response.content,
-            "sources": sources,
-            "confidence": confidence,
+            "sources": ctx_data["sources"],
+            "confidence": ctx_data["confidence"],
+            "processing_time_ms": elapsed_ms,
+            "model": LLM_MODEL,
+        }
+
+    def query_stream(self, question: str, top_k: int = TOP_K_FINAL, min_confidence: float = 0.0):
+        """
+        Stream LLM tokens while preserving grounding, sources, and telemetry.
+        Yields chunk dictionaries:
+        - {"type": "metadata", "sources": [...], "confidence": float}
+        - {"type": "token", "content": "token_str"}
+        - {"type": "done", "processing_time_ms": float, "model": str}
+        """
+        ctx_data = self._prepare_query_context(question, top_k=top_k)
+        start_time = ctx_data["start_time"]
+
+        if not ctx_data["has_context"]:
+            yield {
+                "type": "error",
+                "message": "No relevant documents found in the knowledge base matching your query.",
+            }
+            return
+
+        if ctx_data["confidence"] < min_confidence:
+            yield {
+                "type": "error",
+                "message": f"Confidence ({ctx_data['confidence']:.2f}) below threshold ({min_confidence:.2f}).",
+            }
+            return
+
+        yield {
+            "type": "metadata",
+            "sources": ctx_data["sources"],
+            "confidence": ctx_data["confidence"],
+        }
+
+        messages = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(
+                content=USER_PROMPT_TEMPLATE.format(
+                    context=ctx_data["context"],
+                    query=question,
+                )
+            ),
+        ]
+
+        for chunk in self.llm.stream(messages):
+            if chunk.content:
+                yield {
+                    "type": "token",
+                    "content": chunk.content,
+                }
+
+        elapsed_ms = round((time.time() - start_time) * 1000, 1)
+        yield {
+            "type": "done",
             "processing_time_ms": elapsed_ms,
             "model": LLM_MODEL,
         }

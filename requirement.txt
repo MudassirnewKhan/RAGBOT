@@ -15,3 +15,10 @@ numpy
 
 # Hybrid Search (BM25 keyword search)
 rank-bm25
+
+# REST API & Production Server (Phase 2)
+fastapi
+uvicorn[standard]
+tenacity
+python-multipart
+httpx
