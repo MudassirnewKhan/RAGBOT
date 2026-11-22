@@ -53,6 +53,20 @@ jobs:
       - name: Test Container Startup & Healthcheck
         run: |
           docker run -d --name test-rag-container -p 8000:8000 -e GROQ_API_KEY=mock_key ragbot-api:latest
-          sleep 15
-          curl --fail http://localhost:8000/health || exit 1
+          
+          # Wait up to 60s for model loading and server initialization
+          echo "Waiting for container to warm up and become healthy..."
+          for i in {1..30}; do
+            if curl -s -f http://localhost:8000/health; then
+              echo "Healthcheck passed!"
+              docker stop test-rag-container
+              exit 0
+            fi
+            echo "Waiting for server to become ready ($i/30)..."
+            sleep 2
+          done
+
+          echo "Container failed to respond. Printing container logs:"
+          docker logs test-rag-container
           docker stop test-rag-container
+          exit 1
