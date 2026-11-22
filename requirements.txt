@@ -22,3 +22,12 @@ uvicorn[standard]
 tenacity
 python-multipart
 httpx
+
+
+
+
+# ci/cd
+
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
